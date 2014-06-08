@@ -1,0 +1,87 @@
+# /bin/sh -eu
+# gpg-forward-agent -- forward a gpg-agent to another machine
+# Copyright (C) 2010  b0fh <https://superuser.com/users/28621>
+# Copyright (C) 2011  Andreas Fuchs <asf@boinkor.net>
+# Copyright (C) 2012  bignose <https://superuser.com/users/6653>
+# Copyright (C) 2013, 2014  Benjamin Barenblat <bbaren@mit.edu>
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the Creative Commons Attribution-ShareAlike 4.0 International
+# Public License (the "License") as published by Creative Commons.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the License for more details.
+# 
+# You should have received a copy of the License along with this program.  If
+# not, see <https://creativecommons.org/licenses/>.
+
+
+# This program is based on the answers to
+# <https://superuser.com/questions/161973>.
+
+
+# This program connects a GnuPG executable on a remote machine with your local
+# gpg-agent instance, thereby allowing you to sign, verify, encrypt, and
+# decrypt data on the remote machine without your key being present there.
+#
+###############################################################################
+# THIS PROGRAM DOES NOT ALLOW YOU TO WORK WITH GNUPG ON AN UNTRUSTED MACHINE! #
+###############################################################################
+# Only use this program when you trust both the local and remote machines!
+# Although your key material will never be resident on the remote machine and
+# your passphrase never transmitted over the wire, the gpg executable on the
+# remote machine may still MitM your message.
+#
+# That said, the gpg-agent is tunneled using SSH, so it should be protected
+# against attacks on the wire between the two machines.
+#
+# Graphically, the dataflow looks something like this:
+#
+#     remote gpg
+#         <---------> gpg-agent socket on remote machine
+#         <-[socat]-> TCP port on remote machine
+#         <--[SSH]--> TCP port on local machine
+#         <-[socat]-> gpg-agent socket on local machine
+#         <---------> local gpg-agent
+
+
+# Usage:
+#     gpg-forward-agent target_machine [ssh_args ...]
+# Hit ^C when you're ready to terminate the connection.
+#
+# If your connection drops (e.g., because your wi-fi fails) while the
+# connection is open, there will likely be a stale socat left on the remote
+# machine.  You can take care of this by running
+#
+#     sudo netstat -antpl | grep $FORWARD_PORT
+#
+# where $FORWARD_PORT is set below, and killing the process that comes up.
+
+
+# Configuration
+#
+# Pick a port, any port.  Well, not /any/ port--it should be a port over 1024,
+# lest you need to run this script as root.
+readonly FORWARD_PORT=39973
+
+
+# You shouldn't need to touch anything below this line.
+
+if [ $# -lt 1 ]; then
+    echo "usage: $0 ssh_args ..." >&2
+    exit 1
+fi
+
+readonly gpg_sock="`echo "$GPG_AGENT_INFO" | cut -d: -f1`"
+if [ -z "$gpg_sock" ] ; then
+    echo "No GPG agent configured - this won't work out." >&2
+    exit 2
+fi
+
+socat TCP-LISTEN:$FORWARD_PORT,bind=localhost,fork,reuseaddr UNIX-CONNECT:$gpg_sock &
+readonly local_socat=$!
+trap "kill $local_socat" EXIT
+
+ssh -R $FORWARD_PORT:localhost:$FORWARD_PORT "$@" -tt \
+    socat UNIX-LISTEN:$HOME/.gnupg/S.gpg-agent,unlink-close,unlink-early,fork,reuseaddr TCP4:localhost:$FORWARD_PORT

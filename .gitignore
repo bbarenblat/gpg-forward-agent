@@ -1,0 +1,5 @@
+# .gitignore for gpg-forward-agent                                 -*- conf -*-
+
+# Editor backup files
+*~
+.#*
